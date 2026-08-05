@@ -1,0 +1,20 @@
+{
+  "steps": 200,
+  "seed": 0,
+  "model": "CS1 CifarResNet",
+  "batch_size": 128,
+  "seconds": {
+    "off": 270.6062965419842,
+    "cheap": 278.0893954579951,
+    "full": 270.0599009169964
+  },
+  "overhead_percent": {
+    "off": 0.0,
+    "cheap": 2.765308498595842,
+    "full": -0.2019153404669627
+  },
+  "python": "3.13.9",
+  "torch": "2.13.0",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "processor": "arm"
+}
