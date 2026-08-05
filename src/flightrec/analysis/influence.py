@@ -119,9 +119,36 @@ def _candidate_gradients(
     for original in loader:
         batch = move_batch(original, device)
         inputs, targets = _xy(batch)
-        for index in range(len(targets)):
-            one = (inputs[index : index + 1], targets[index : index + 1])
-            yield _gradient(_criterion_loss(model, loss_fn, one), params)
+        # Reuse one forward graph for the whole microbatch. This matters when thousands of
+        # candidates share a large frozen feature extractor; only the selected-parameter
+        # backward is repeated per example.
+        try:
+            logits = model(inputs)
+            losses = [
+                loss_fn(logits[index : index + 1], targets[index : index + 1])
+                for index in range(len(targets))
+            ]
+        except TypeError:
+            losses = [
+                _criterion_loss(
+                    model,
+                    loss_fn,
+                    (inputs[index : index + 1], targets[index : index + 1]),
+                )
+                for index in range(len(targets))
+            ]
+        for index, loss in enumerate(losses):
+            grads = torch.autograd.grad(
+                loss,
+                params,
+                allow_unused=True,
+                retain_graph=index + 1 < len(losses),
+            )
+            flat = flatten_tensors(
+                grad if grad is not None else torch.zeros_like(param)
+                for grad, param in zip(grads, params, strict=True)
+            )
+            yield flat.detach().cpu().double().numpy()
 
 
 def self_influence(

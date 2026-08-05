@@ -112,13 +112,18 @@ def margin_forgetting_figure(stats: EventStats) -> go.Figure:
     return figure
 
 
-def influence_figure(suspicion: np.ndarray, influence: np.ndarray, rho: float) -> go.Figure:
+def influence_figure(
+    suspicion: np.ndarray,
+    influence: np.ndarray,
+    rho: float,
+    influence_label: str = "self-influence",
+) -> go.Figure:
     """Build an influence-versus-dynamics scatter plot."""
     figure = go.Figure(go.Scatter(x=suspicion, y=influence, mode="markers"))
     figure.update_layout(
         template=TEMPLATE,
         title=f"Influence vs. suspicion (Spearman rho={rho:.3f})",
         xaxis_title="suspicion score",
-        yaxis_title="self-influence",
+        yaxis_title=influence_label,
     )
     return figure

@@ -12,10 +12,22 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from flightrec.probes.curvature import lanczos_spectrum
+from flightrec.probes.curvature import lanczos_ritz_spectrum, lanczos_spectrum
 from flightrec.probes.hvp import HessianOperator
 from flightrec.storage import RunWriter
 from flightrec.utils import move_batch
+
+
+def _total_norm(tensors: list[Tensor], device: torch.device) -> Tensor:
+    """Use the public fused norm API when available, with a PyTorch 2.2 fallback."""
+    get_total_norm = getattr(torch.nn.utils, "get_total_norm", None)
+    if get_total_norm is not None:
+        return get_total_norm(tensors, norm_type=2.0)
+    if not tensors:  # pragma: no cover - the public helper exists in current PyTorch
+        return torch.zeros((), device=device)
+    return torch.linalg.vector_norm(
+        torch.stack([torch.linalg.vector_norm(tensor, ord=2) for tensor in tensors]), ord=2
+    )
 
 
 class FlightRecorder:
@@ -32,22 +44,27 @@ class FlightRecorder:
         num_samples: int | None = None,
         spectrum_every: int | None = None,
         spectrum_k: int = 10,
+        spectrum_lanczos_steps: int | None = None,
         probe_device: str | torch.device = "cpu",
         probe_loss_fn: Callable[[nn.Module, object], Tensor] | None = None,
         probe_batch: object | None = None,
     ) -> None:
         if spectrum_every is not None and (probe_loss_fn is None or probe_batch is None):
             raise ValueError("spectrum probes require probe_loss_fn and probe_batch")
+        if spectrum_lanczos_steps is not None and spectrum_lanczos_steps < 2 * spectrum_k:
+            raise ValueError("spectrum_lanczos_steps must be at least 2 * spectrum_k")
         self.model = model
         self.num_samples = num_samples
         self.spectrum_every = spectrum_every
         self.spectrum_k = spectrum_k
+        self.spectrum_lanczos_steps = spectrum_lanczos_steps
         self.probe_device = torch.device(probe_device)
         self.probe_loss_fn = probe_loss_fn
         self.probe_batch = probe_batch
         config = {
             "spectrum_every": spectrum_every,
             "spectrum_k": spectrum_k,
+            "spectrum_lanczos_steps": spectrum_lanczos_steps,
             "probe_device": str(probe_device),
         }
         self.writer = RunWriter(run_dir, num_samples, config)
@@ -83,12 +100,8 @@ class FlightRecorder:
             detached = [param.detach().float() for param in parameters]
             if detached:
                 device = detached[0].device
-                grad_norm = (
-                    torch.linalg.vector_norm(torch.stack(torch._foreach_norm(gradients, 2)))
-                    if gradients
-                    else torch.zeros((), device=device)
-                )
-                param_norm = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(detached, 2)))
+                grad_norm = _total_norm(gradients, device)
+                param_norm = _total_norm(detached, device)
                 grad_norm, param_norm = torch.stack((grad_norm, param_norm)).tolist()
             else:
                 grad_norm = param_norm = 0.0
@@ -159,7 +172,15 @@ class FlightRecorder:
             return self.probe_loss_fn(probe_model, batch)
 
         operator = HessianOperator(probe_model, closure, self.probe_device)
-        low, high = lanczos_spectrum(operator, self.spectrum_k)
+        if self.spectrum_lanczos_steps is None:
+            low, high = lanczos_spectrum(operator, self.spectrum_k)
+        else:
+            low, high = lanczos_ritz_spectrum(
+                operator,
+                self.spectrum_k,
+                self.spectrum_lanczos_steps,
+                seed=self.step,
+            )
         self.writer.append_spectrum(self.step, low, high)
 
     def close(self) -> None:

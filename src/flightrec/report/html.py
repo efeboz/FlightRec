@@ -64,6 +64,7 @@ def build_report(
     run = read_run(run_dir)
     phases = detect_phases(run)
     figures = [timeline_figure(run, phases)]
+    influence_plot = None
     if run.spectrum_steps is not None:
         figures.append(spectrum_figure(run, phases))
 
@@ -131,8 +132,11 @@ def build_report(
         valid = np.isfinite(influence_array[:size]) & np.isfinite(scores[:size])
         if valid.sum() >= 2:
             rho = float(spearmanr(scores[:size][valid], influence_array[:size][valid]).statistic)
-            figures.append(
-                influence_figure(scores[:size][valid], influence_array[:size][valid], rho)
+            influence_plot = influence_figure(
+                scores[:size][valid],
+                influence_array[:size][valid],
+                rho,
+                str(extras.get("influence_label", "self-influence")),
             )
 
     plot_html = []
@@ -141,6 +145,10 @@ def build_report(
             figure.to_html(full_html=False, include_plotlyjs="inline" if index == 0 else False)
         )
     sections.insert(3, "<h2>Timeline and diagnostics</h2>" + "".join(plot_html))
+    if influence_plot is not None:
+        sections.append(
+            "<h2>Influence</h2>" + influence_plot.to_html(full_html=False, include_plotlyjs=False)
+        )
     document = (
         """<!doctype html><html><head><meta charset="utf-8"><title>FlightRec report</title>
 <style>body{font-family:system-ui;margin:2rem;max-width:1200px}table{border-collapse:collapse}
