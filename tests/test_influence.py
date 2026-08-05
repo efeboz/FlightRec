@@ -9,7 +9,12 @@ from sklearn.datasets import make_blobs
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from flightrec.analysis.influence import InfluenceConfig, influence_on, self_influence
+from flightrec.analysis.influence import (
+    InfluenceConfig,
+    _candidate_gradients,
+    influence_on,
+    self_influence,
+)
 
 
 def train_model(dataset, damping, state=None):
@@ -136,3 +141,28 @@ def test_self_influence_rejects_nonconverged_cg(monkeypatch):
             InfluenceConfig(last_layers_only=False),
             "cpu",
         )
+
+
+def test_candidate_gradient_microbatch_reuses_forward_pass():
+    class CountingLinear(nn.Linear):
+        calls = 0
+
+        def forward(self, inputs):
+            self.calls += 1
+            return super().forward(inputs)
+
+    model = CountingLinear(2, 2).double()
+    inputs = torch.randn(10, 2, dtype=torch.float64)
+    targets = torch.randint(0, 2, (10,))
+    loader = DataLoader(TensorDataset(inputs, targets), batch_size=5)
+    gradients = list(
+        _candidate_gradients(
+            model,
+            nn.CrossEntropyLoss(),
+            loader,
+            list(model.parameters()),
+            torch.device("cpu"),
+        )
+    )
+    assert len(gradients) == 10
+    assert model.calls == 2

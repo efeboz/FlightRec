@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as functional
 
-from flightrec.probes.curvature import hutchinson_trace, lanczos_spectrum
+from flightrec.probes.curvature import hutchinson_trace, lanczos_ritz_spectrum, lanczos_spectrum
 from flightrec.probes.hvp import HessianOperator
 
 
@@ -30,6 +30,9 @@ def test_spectrum_and_trace_match_exact_hessian():
     eigenvalues = np.linalg.eigvalsh(exact)
     np.testing.assert_allclose(low, eigenvalues[:2], rtol=1e-4, atol=1e-7)
     np.testing.assert_allclose(high, eigenvalues[-2:], rtol=1e-4, atol=1e-7)
+    ritz_low, ritz_high = lanczos_ritz_spectrum(operator, k=2, steps=len(eigenvalues), seed=3)
+    np.testing.assert_allclose(ritz_low, eigenvalues[:2], rtol=1e-4, atol=1e-7)
+    np.testing.assert_allclose(ritz_high, eigenvalues[-2:], rtol=1e-4, atol=1e-7)
     assert eigenvalues[0] < -1e-4
     estimate = hutchinson_trace(operator, n_probes=256, seed=0)
     assert abs(estimate - np.trace(exact)) / abs(np.trace(exact)) < 0.15
