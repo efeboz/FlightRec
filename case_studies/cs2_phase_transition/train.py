@@ -34,6 +34,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=100)
     parser.add_argument("--spectrum-every", type=int, default=1000)
     parser.add_argument("--spectrum-k", type=int, default=5)
+    parser.add_argument(
+        "--spectrum-lanczos-steps",
+        type=int,
+        default=20,
+        help="fixed Lanczos budget per periodic probe; use 0 for converged ARPACK",
+    )
     parser.add_argument("--no-spectrum", action="store_true")
     return parser.parse_args()
 
@@ -95,6 +101,7 @@ def main() -> None:
         model.parameters(), lr=args.lr, weight_decay=1.0, betas=(0.9, 0.98)
     )
     spectrum_every = None if args.no_spectrum else args.spectrum_every
+    spectrum_lanczos_steps = args.spectrum_lanczos_steps or None
 
     def probe_loss(probe_model: torch.nn.Module, batch: object) -> torch.Tensor:
         inputs, targets = batch
@@ -108,6 +115,7 @@ def main() -> None:
         num_samples=len(train_set),
         spectrum_every=spectrum_every,
         spectrum_k=args.spectrum_k,
+        spectrum_lanczos_steps=spectrum_lanczos_steps,
         probe_device=probe_device,
         probe_loss_fn=probe_loss,
         probe_batch=(fixed_inputs, fixed_targets),

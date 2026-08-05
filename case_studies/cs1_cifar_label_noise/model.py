@@ -52,10 +52,14 @@ class CifarResNet(nn.Module):
         layers.extend(BasicBlock(channels, channels) for _ in range(blocks - 1))
         return nn.Sequential(*layers)
 
+    def forward_features(self, inputs: Tensor) -> Tensor:
+        """Return pooled final-block features before the classifier head."""
+        features = self.layer4(self.layer3(self.layer2(self.layer1(self.stem(inputs)))))
+        return self.pool(features).flatten(1)
+
     def forward(self, inputs: Tensor) -> Tensor:
         """Return class logits."""
-        features = self.layer4(self.layer3(self.layer2(self.layer1(self.stem(inputs)))))
-        return self.fc(self.pool(features).flatten(1))
+        return self.fc(self.forward_features(inputs))
 
 
 def resnet18_cifar(num_classes: int = 10) -> CifarResNet:
