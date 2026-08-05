@@ -7,17 +7,41 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import torch
-from model import resnet18_cifar
 from sklearn.metrics import average_precision_score, precision_recall_curve
-from torch.utils.data import DataLoader, Subset, TensorDataset
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision.datasets import CIFAR10
-from torchvision.transforms import ToTensor
+from torchvision.transforms import Compose, Normalize, ToTensor
 
 from flightrec import read_run
 from flightrec.analysis.events import compute_event_stats, suspicion_score
 from flightrec.analysis.influence import InfluenceConfig, self_influence
 from flightrec.report import build_report
 from flightrec.utils import pick_device, seed_everything
+
+try:
+    from .model import resnet18_cifar
+except ImportError:
+    from model import resnet18_cifar
+
+CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR_STD = (0.2470, 0.2435, 0.2616)
+
+
+class LabelledSubset(Dataset[tuple[Tensor, int]]):
+    """Present saved labels over stable indices into a transformed CIFAR dataset."""
+
+    def __init__(self, dataset: Dataset, indices: np.ndarray, labels: np.ndarray) -> None:
+        self.dataset = dataset
+        self.indices = indices
+        self.labels = labels
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, index: int) -> tuple[Tensor, int]:
+        image, _ = self.dataset[int(self.indices[index])]
+        return image, int(self.labels[index])
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--influence-candidates", type=int, default=5000)
+    parser.add_argument("--influence-damping", type=float, default=0.01)
+    parser.add_argument("--influence-cg-maxiter", type=int, default=100)
+    parser.add_argument("--influence-hessian-batches", type=int, default=8)
     parser.add_argument("--skip-influence", action="store_true")
     return parser.parse_args()
 
@@ -52,25 +79,13 @@ def main() -> None:
     influence_full = np.full(len(noise), np.nan)
 
     if not args.skip_influence:
-        config = json.loads((run_dir / "training_config.json").read_text())
         subset_indices = np.load(run_dir / "subset_indices.npy")
-        original = np.load(run_dir / "original_labels.npy")
-        noisy_labels = original.copy()
-        # Recover injected labels from saved run metadata when possible; noise identity is enough
-        # for detector evaluation, and deterministic regeneration preserves training labels.
-        rng = np.random.default_rng(config["seed"])
-        all_indices = rng.permutation(50000)
-        _ = all_indices[: config.get("subset") or 50000]
-        chosen = rng.choice(
-            len(subset_indices),
-            int(round(config["noise_rate"] * len(subset_indices))),
-            replace=False,
-        )
-        noisy_labels[chosen] = (noisy_labels[chosen] + rng.integers(1, 10, len(chosen))) % 10
-        base = CIFAR10(args.data_dir, train=True, download=True, transform=ToTensor())
-        tensors = torch.stack([base[int(index)][0] for index in subset_indices])
-        dataset = TensorDataset(tensors, torch.as_tensor(noisy_labels))
-        top = np.argsort(dynamics)[::-1][: min(2000, len(noise))]
+        noisy_labels = np.load(run_dir / "noisy_labels.npy")
+        transform = Compose([ToTensor(), Normalize(CIFAR_MEAN, CIFAR_STD)])
+        base = CIFAR10(args.data_dir, train=True, download=True, transform=transform)
+        dataset = LabelledSubset(base, subset_indices, noisy_labels)
+        top_count = min(2000, args.influence_candidates, len(noise))
+        top = np.argsort(dynamics)[::-1][:top_count]
         remaining = np.setdiff1d(np.arange(len(noise)), top)
         count = min(max(0, args.influence_candidates - len(top)), len(remaining))
         random_part = np.random.default_rng(args.seed).choice(remaining, count, replace=False)
@@ -84,7 +99,12 @@ def main() -> None:
             torch.nn.CrossEntropyLoss(),
             candidate_loader,
             hessian_loader,
-            InfluenceConfig(last_layers_only=True),
+            InfluenceConfig(
+                damping=args.influence_damping,
+                cg_maxiter=args.influence_cg_maxiter,
+                hessian_batches=args.influence_hessian_batches,
+                last_layers_only=True,
+            ),
             pick_device(args.device),
         )
         influence_full[candidates] = values
@@ -100,9 +120,11 @@ def main() -> None:
     print("| detector | AP | precision@k |")
     print("|---|---:|---:|")
     figure = go.Figure()
+    measured: dict[str, dict[str, float]] = {}
     for name, score in detectors.items():
         ap = average_precision_score(noise, score)
         precision_at_k = float(noise[np.argsort(score)[::-1][:k]].mean())
+        measured[name] = {"average_precision": ap, "precision_at_k": precision_at_k}
         print(f"| {name} | {ap:.4f} | {precision_at_k:.4f} |")
         precision, recall, _ = precision_recall_curve(noise, score)
         figure.add_trace(go.Scatter(x=recall, y=precision, name=name))
@@ -117,6 +139,7 @@ def main() -> None:
     if valid_influence.any():
         extras["influence"] = influence_full
     build_report(run_dir, run_dir / "report.html", extras)
+    (run_dir / "analysis_metrics.json").write_text(json.dumps(measured, indent=2))
 
 
 if __name__ == "__main__":

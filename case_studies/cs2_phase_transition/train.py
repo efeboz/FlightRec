@@ -1,16 +1,23 @@
-"""Record a modular-addition grokking run."""
+"""Record a modular-addition delayed generalization run."""
 
 import argparse
 import json
+import platform
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
-from model import GrokkingTransformer
 from torch.utils.data import DataLoader, TensorDataset
 
 from flightrec import FlightRecorder, IndexedDataset
 from flightrec.utils import pick_device, seed_everything
+
+try:
+    from .model import ModularAdditionTransformer
+except ImportError:
+    from model import ModularAdditionTransformer
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", default="runs/cs2")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--eval-every", type=int, default=100)
     parser.add_argument("--spectrum-every", type=int, default=1000)
     parser.add_argument("--spectrum-k", type=int, default=5)
@@ -65,6 +73,7 @@ def evaluate(
 
 def main() -> None:
     """Train and record modular addition."""
+    started = time.perf_counter()
     args = parse_args()
     seed_everything(args.seed)
     device = pick_device(args.device)
@@ -78,10 +87,13 @@ def main() -> None:
     )
     train_eval_loader = DataLoader(train_set, batch_size=1024)
     test_loader = DataLoader(test_set, batch_size=1024)
-    fixed_inputs, fixed_targets = next(iter(DataLoader(train_set, batch_size=512, shuffle=False)))
-    model = GrokkingTransformer(args.p).to(device)
+    fixed_inputs = train_set.tensors[0][:512]
+    fixed_targets = train_set.tensors[1][:512]
+    model = ModularAdditionTransformer(args.p).to(device)
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1.0, betas=(0.9, 0.98))
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=1.0, betas=(0.9, 0.98)
+    )
     spectrum_every = None if args.no_spectrum else args.spectrum_every
 
     def probe_loss(probe_model: torch.nn.Module, batch: object) -> torch.Tensor:
@@ -134,6 +146,15 @@ def main() -> None:
                         torch.save(model.state_dict(), run_dir / f"checkpoint_{name}.pt")
                         checkpoints.add(name)
     torch.save(model.state_dict(), run_dir / "final_model.pt")
+    environment = {
+        "train_runtime_seconds": time.perf_counter() - started,
+        "device": str(device),
+        "python": sys.version.split()[0],
+        "torch": str(torch.__version__),
+        "platform": platform.platform(),
+        "processor": platform.processor() or platform.machine(),
+    }
+    (run_dir / "run_environment.json").write_text(json.dumps(environment, indent=2))
 
 
 if __name__ == "__main__":

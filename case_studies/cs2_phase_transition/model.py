@@ -4,7 +4,7 @@ import torch
 from torch import Tensor, nn
 
 
-class GrokkingTransformer(nn.Module):
+class ModularAdditionTransformer(nn.Module):
     """Two-layer decoder-style transformer with learned positions."""
 
     def __init__(

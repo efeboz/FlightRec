@@ -1,4 +1,4 @@
-"""Analyze the modular-addition grokking transition."""
+"""Analyze the modular-addition delayed generalization transition."""
 
 import argparse
 import json
@@ -7,14 +7,19 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import torch
-from model import GrokkingTransformer
 from plotly.subplots import make_subplots
 from torch.utils.data import DataLoader
-from train import modular_data
 
 from flightrec import read_run
 from flightrec.analysis.events import compute_event_stats
 from flightrec.analysis.phases import detect_phases
+
+try:
+    from .model import ModularAdditionTransformer
+    from .train import modular_data
+except ImportError:
+    from model import ModularAdditionTransformer
+    from train import modular_data
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,11 +47,25 @@ def main() -> None:
     separation = int(test_generalized - train_learned)
     found = any(low <= point <= high for point in result.breakpoints[:-1])
     print(f"Transition window: {low}..{high}; phase breakpoint detected: {found}")
-    print(f"Train/test grokking separation: {separation} steps")
+    print(f"Train/test delayed generalization separation: {separation} steps")
+    measured = {
+        "transition_start_step": int(low),
+        "transition_end_step": int(high),
+        "train_99_step": int(train_learned),
+        "test_90_step": int(test_generalized),
+        "separation_steps": separation,
+        "breakpoint_in_transition": found,
+        "breakpoints": result.breakpoints,
+    }
+    (run_dir / "analysis_metrics.json").write_text(json.dumps(measured, indent=2))
     if not found:
-        raise AssertionError("no automatically detected breakpoint lies in the grokking transition")
+        raise AssertionError(
+            "no automatically detected breakpoint lies in the delayed generalization transition"
+        )
     if separation < 3000:
-        raise AssertionError("run did not exhibit the required 3,000-step grokking separation")
+        raise AssertionError(
+            "run did not exhibit the required 3,000-step delayed generalization separation"
+        )
 
     figure = make_subplots(rows=3, cols=1, shared_xaxes=True)
     if "train_acc" in run.scalars:
@@ -80,9 +99,9 @@ def main() -> None:
             row="all",
             col=1,
         )
-    figure.update_xaxes(type="log", row=3, col=1)
-    figure.update_layout(template="plotly_white", title="Grokking timeline")
-    figure.write_html(run_dir / "grokking_timeline.html", include_plotlyjs="inline")
+    figure.update_xaxes(type="log")
+    figure.update_layout(template="plotly_white", title="delayed generalization timeline")
+    figure.write_html(run_dir / "phase_transition_timeline.html", include_plotlyjs="inline")
 
     if run.correct is None:
         return
@@ -102,7 +121,7 @@ def main() -> None:
         checkpoint = run_dir / f"checkpoint_{name}.pt"
         if not checkpoint.exists():
             continue
-        model = GrokkingTransformer(config["p"])
+        model = ModularAdditionTransformer(config["p"])
         model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
         margins = []
         with torch.no_grad():
