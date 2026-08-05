@@ -76,7 +76,9 @@ def detect_phases(run: RunData, penalty: float | None = None) -> PhaseResult:
                 filled = _interpolate(steps, raw, steps)
                 if logarithm:
                     filled = np.log(np.maximum(filled, 1e-12))
-                columns.append(_ema(filled, 0.02 * len(steps)))
+                if field == "loss":
+                    filled = _ema(filled, 0.02 * len(steps))
+                columns.append(filled)
                 names.append(label)
 
     if run.spectrum_steps is not None and run.eigs_high is not None and len(run.spectrum_steps):
@@ -133,10 +135,12 @@ def _label_segment(segment: np.ndarray, names: list[str]) -> str:
     if len(segment) < 2:
         return "plateau"
     changes = {name: segment[-1, index] - segment[0, index] for index, name in enumerate(names)}
-    ranges = {name: np.ptp(segment[:, index]) for index, name in enumerate(names)}
     loss_change = changes.get("train_loss", 0.0)
     test_change = changes.get("test_acc", 0.0)
-    if ranges.get("grad_norm", 0.0) > 3.0 or ranges.get("train_loss", 0.0) > 4.0:
+    local_jumps = {
+        name: float(np.max(np.abs(np.diff(segment[:, index])))) for index, name in enumerate(names)
+    }
+    if local_jumps.get("grad_norm", 0.0) > 2.5 or local_jumps.get("train_loss", 0.0) > 2.5:
         return "instability"
     if loss_change < -0.5 and test_change < 0.25:
         return "memorization"

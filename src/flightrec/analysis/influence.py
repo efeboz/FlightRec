@@ -93,6 +93,22 @@ def _gradient(loss: Tensor, params: list[Tensor]) -> np.ndarray:
     return flat.detach().cpu().double().numpy()
 
 
+def _safe_dot(left: np.ndarray, right: np.ndarray, label: str) -> float:
+    """Return a finite dot product without relying on platform BLAS status flags."""
+    try:
+        with np.errstate(divide="raise", over="raise", invalid="raise"):
+            value = 0.0
+            for start in range(0, len(left), 1_000_000):
+                stop = min(start + 1_000_000, len(left))
+                products = np.multiply(left[start:stop], right[start:stop])
+                value += float(np.sum(products, dtype=np.float64))
+    except FloatingPointError as error:
+        raise FloatingPointError(f"{label} overflowed") from error
+    if not np.isfinite(value):
+        raise FloatingPointError(f"{label} is non-finite")
+    return value
+
+
 def _candidate_gradients(
     model: nn.Module,
     loss_fn: Callable[..., Tensor],
@@ -130,9 +146,11 @@ def self_influence(
         probe_model, loss_fn, candidate_loader, params, target_device
     ):
         solution, info = cg(system, gradient, rtol=cfg.cg_tol, atol=0.0, maxiter=cfg.cg_maxiter)
-        if info < 0:
-            raise RuntimeError("conjugate gradient failed")
-        scores.append(float(gradient @ solution))
+        if info != 0:
+            raise RuntimeError(f"conjugate gradient did not converge (info={info})")
+        if not np.isfinite(solution).all():
+            raise FloatingPointError("conjugate gradient returned a non-finite solution")
+        scores.append(_safe_dot(gradient, solution, "self-influence score"))
     return np.asarray(scores, dtype=np.float64)
 
 
@@ -155,10 +173,12 @@ def influence_on(
     inverse_test, info = cg(
         system, test_gradient, rtol=cfg.cg_tol, atol=0.0, maxiter=cfg.cg_maxiter
     )
-    if info < 0:
-        raise RuntimeError("conjugate gradient failed")
+    if info != 0:
+        raise RuntimeError(f"conjugate gradient did not converge (info={info})")
+    if not np.isfinite(inverse_test).all():
+        raise FloatingPointError("conjugate gradient returned a non-finite solution")
     values = [
-        -float(gradient @ inverse_test)
+        -_safe_dot(gradient, inverse_test, "influence score")
         for gradient in _candidate_gradients(
             probe_model, loss_fn, candidate_loader, params, target_device
         )

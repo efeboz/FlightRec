@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -10,6 +11,25 @@ from scipy.sparse.linalg import LinearOperator
 from torch import Tensor, nn
 
 from flightrec.utils import flatten_tensors, unflatten_vector
+
+try:
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+except ImportError:  # pragma: no cover - compatibility path for older supported PyTorch
+    SDPBackend = None
+    sdpa_kernel = None
+
+
+@contextmanager
+def _math_attention() -> Iterator[None]:
+    """Force the attention backend with CPU double-backward support."""
+    if sdpa_kernel is not None and SDPBackend is not None:
+        with sdpa_kernel([SDPBackend.MATH]):
+            yield
+    else:  # pragma: no cover - exercised only on older supported PyTorch
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=False, enable_math=True, enable_mem_efficient=False
+        ):
+            yield
 
 
 def hvp(loss_fn: Callable[[], Tensor], params: list[Tensor], vector: Tensor) -> Tensor:
@@ -26,21 +46,22 @@ def hvp(loss_fn: Callable[[], Tensor], params: list[Tensor], vector: Tensor) -> 
     """
     if vector.numel() != sum(param.numel() for param in params):
         raise ValueError("vector size does not match parameters")
-    loss = loss_fn()
-    first = torch.autograd.grad(loss, params, create_graph=True, allow_unused=True)
-    differentiable = [
-        grad if grad is not None else torch.zeros_like(param)
-        for grad, param in zip(first, params, strict=True)
-    ]
-    flat_first = flatten_tensors(differentiable)
-    if not flat_first.requires_grad:
-        return torch.zeros_like(vector)
-    second = torch.autograd.grad(
-        flat_first,
-        params,
-        grad_outputs=vector.to(flat_first),
-        allow_unused=True,
-    )
+    with _math_attention():
+        loss = loss_fn()
+        first = torch.autograd.grad(loss, params, create_graph=True, allow_unused=True)
+        differentiable = [
+            grad if grad is not None else torch.zeros_like(param)
+            for grad, param in zip(first, params, strict=True)
+        ]
+        flat_first = flatten_tensors(differentiable)
+        if not flat_first.requires_grad:
+            return torch.zeros_like(vector)
+        second = torch.autograd.grad(
+            flat_first,
+            params,
+            grad_outputs=vector.to(flat_first),
+            allow_unused=True,
+        )
     return flatten_tensors(
         grad if grad is not None else torch.zeros_like(param)
         for grad, param in zip(second, params, strict=True)

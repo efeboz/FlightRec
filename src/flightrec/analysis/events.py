@@ -78,11 +78,16 @@ def suspicion_score(stats: EventStats) -> np.ndarray:
     count = len(stats.first_learned)
     if count == 0:
         return np.empty(0, dtype=np.float64)
+    forgetting = stats.forgetting_count.astype(np.float64)
+    # A never-learned sample has no 1 -> 0 transition by definition, but that zero must not
+    # make it rank as easier than a learned sample. Keep the raw event count exact and treat
+    # never-learned samples as maximal forgetting evidence only for suspicion ranking.
+    forgetting[stats.never_learned] = np.inf
     late = stats.first_learned.astype(np.float64)
     late[stats.never_learned] = np.inf
     margin = stats.mean_margin.astype(np.float64)
     margin[np.isnan(margin)] = -np.inf
-    combined = (_rank(stats.forgetting_count) + _rank(late) + _rank(-margin)) / 3.0
+    combined = (_rank(forgetting) + _rank(late) + _rank(-margin)) / 3.0
     span = float(combined.max() - combined.min())
     if span == 0.0:
         return np.zeros(count, dtype=np.float64)

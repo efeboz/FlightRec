@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -77,23 +76,30 @@ class FlightRecorder:
         if self.closed:
             raise RuntimeError("recorder is closed")
         with torch.no_grad():
-            grad_sq = sum(
-                float(torch.sum(param.grad.detach().float() ** 2).item())
-                for param in self.model.parameters()
-                if param.grad is not None
-            )
-            param_sq = sum(
-                float(torch.sum(param.detach().float() ** 2).item())
-                for param in self.model.parameters()
-            )
+            parameters = list(self.model.parameters())
+            gradients = [
+                param.grad.detach().float() for param in parameters if param.grad is not None
+            ]
+            detached = [param.detach().float() for param in parameters]
+            if detached:
+                device = detached[0].device
+                grad_norm = (
+                    torch.linalg.vector_norm(torch.stack(torch._foreach_norm(gradients, 2)))
+                    if gradients
+                    else torch.zeros((), device=device)
+                )
+                param_norm = torch.linalg.vector_norm(torch.stack(torch._foreach_norm(detached, 2)))
+                grad_norm, param_norm = torch.stack((grad_norm, param_norm)).tolist()
+            else:
+                grad_norm = param_norm = 0.0
             record: dict[str, Any] = {
                 "kind": "step",
                 "step": self.step,
                 "epoch": self.epoch,
                 "wall_time": time.perf_counter() - self.started,
                 "loss": float(loss.detach().item()),
-                "grad_norm": math.sqrt(grad_sq),
-                "param_norm": math.sqrt(param_sq),
+                "grad_norm": grad_norm,
+                "param_norm": param_norm,
             }
             if lr is not None:
                 record["lr"] = float(lr)
@@ -142,7 +148,6 @@ class FlightRecorder:
 
     def _record_spectrum(self) -> None:
         assert self.probe_loss_fn is not None
-        prior_training = self.model.training
         probe_model = copy.deepcopy(self.model).to(self.probe_device)
         # A matrix-free eigensolver assumes every matvec represents the same operator.
         # Evaluation mode freezes dropout and BatchNorm buffers on the isolated copy.
@@ -156,7 +161,6 @@ class FlightRecorder:
         operator = HessianOperator(probe_model, closure, self.probe_device)
         low, high = lanczos_spectrum(operator, self.spectrum_k)
         self.writer.append_spectrum(self.step, low, high)
-        self.model.train(prior_training)
 
     def close(self) -> None:
         """Write final metadata and close the recorder; idempotent."""

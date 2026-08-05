@@ -40,7 +40,7 @@ def check_gradients(
     """Compare autograd with central differences and complex-step derivatives.
 
     ``fn`` may accept the parameter dictionary as one argument or accept its
-    entries as keyword arguments. At most 200 deterministically selected flat
+    entries as keyword arguments. At most 200 reproducibly sampled flat
     coordinates are checked in float64.
     """
     real = {
@@ -56,7 +56,9 @@ def check_gradients(
         ]
     )
     total = analytical.size
-    coordinates = np.linspace(0, total - 1, min(200, total), dtype=np.int64)
+    coordinates = np.sort(
+        np.random.default_rng(0).choice(total, size=min(200, total), replace=False)
+    )
     offsets = np.cumsum([0, *[value.numel() for value in real.values()]])
 
     def locate(flat_index: int) -> tuple[str, int]:

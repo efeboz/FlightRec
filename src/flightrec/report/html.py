@@ -110,7 +110,7 @@ def build_report(
         sections.extend(
             [
                 "<h2>Flagged samples</h2>",
-                _table(rows, ("index", "score", "forgotten", "first learned", "mean margin")),
+                _table(rows, ("index", "score", "forgotten", "first learned", "final margin")),
             ]
         )
         image_fn = extras.get("images")
