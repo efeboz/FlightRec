@@ -35,6 +35,15 @@ def test_recorder_tracks_last_observation_and_scalars(tmp_path):
     np.testing.assert_array_equal(run.correct[0], expected)
     assert run.meta["steps"] == 2
     assert set(run.scalars["kind"]) == {"step", "eval"}
+    step = run.scalars["kind"] == "step"
+    expected_grad_norm = torch.linalg.vector_norm(
+        torch.cat([parameter.grad.flatten() for parameter in model.parameters()])
+    ).item()
+    expected_param_norm = torch.linalg.vector_norm(
+        torch.cat([parameter.detach().flatten() for parameter in model.parameters()])
+    ).item()
+    np.testing.assert_allclose(run.scalars["grad_norm"][step].astype(float), expected_grad_norm)
+    np.testing.assert_allclose(run.scalars["param_norm"][step].astype(float), expected_param_norm)
 
 
 def test_recorder_does_not_retain_graph_tensors(tmp_path):
@@ -65,6 +74,40 @@ def test_interrupted_recorder_has_readable_scalars(tmp_path):
     loss = model(torch.ones(1, 1)).sum()
     loss.backward()
     recorder.record_step(loss=loss)
-    recorder.writer.flush()
+    recorder.epoch_end()
     assert read_run(tmp_path).scalars["step"].tolist() == [0.0]
     recorder.close()
+
+
+def test_spectrum_probe_leaves_training_model_untouched(tmp_path):
+    torch.manual_seed(11)
+    model = nn.Linear(2, 2)
+    model.train()
+    inputs = torch.randn(5, 2)
+    targets = torch.randint(0, 2, (5,))
+    before = {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+    def probe_loss(probe_model, batch):
+        probe_inputs, probe_targets = batch
+        return nn.functional.cross_entropy(probe_model(probe_inputs), probe_targets)
+
+    recorder = FlightRecorder(
+        model,
+        tmp_path,
+        spectrum_every=1,
+        spectrum_k=1,
+        probe_device="cpu",
+        probe_loss_fn=probe_loss,
+        probe_batch=(inputs, targets),
+    )
+    loss = nn.functional.cross_entropy(model(inputs), targets)
+    loss.backward()
+    recorder.record_step(loss=loss)
+    recorder.close()
+
+    assert model.training
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name])
+    run = read_run(tmp_path)
+    assert run.spectrum_steps is not None
+    assert run.spectrum_steps.tolist() == [1]

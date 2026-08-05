@@ -36,3 +36,28 @@ def test_detects_synthetic_change_points():
     detected = result.breakpoints[:-1]
     for truth in (99, 199, 299):
         assert any(abs(point - truth) <= 0.03 * length for point in detected)
+
+
+def test_detects_accuracy_transition_with_long_plateau_and_downsampling():
+    rng = np.random.default_rng(5)
+    length = 6000
+    steps = np.arange(length, dtype=float)
+    loss = 0.03 + 4.0 * np.exp(-steps / 250) + rng.normal(0, 0.003, length)
+    grad = 0.05 + 1.5 * np.exp(-steps / 350) + rng.normal(0, 0.005, length)
+    param = 25.0 + 75.0 * np.exp(-steps / 1600) + rng.normal(0, 0.02, length)
+    test_acc = 1.0 / (1.0 + np.exp(-(steps - 1500) / 100))
+    run = RunData(
+        {},
+        {
+            "kind": np.full(length, "step"),
+            "step": steps,
+            "loss": loss,
+            "grad_norm": grad,
+            "param_norm": param,
+            "test_acc": test_acc,
+        },
+    )
+    result = detect_phases(run)
+    transition_start = int(np.flatnonzero(test_acc >= 0.05)[0])
+    transition_end = int(np.flatnonzero(test_acc >= 0.95)[0])
+    assert any(transition_start <= point <= transition_end for point in result.breakpoints[:-1])

@@ -27,3 +27,28 @@ def test_events_vectorized_large():
     stats = compute_event_stats(RunData({}, {}, correct, margin))
     assert time.perf_counter() - start < 1.0
     assert stats.first_learned.shape == (50_000,)
+
+
+def test_never_learned_ranks_as_maximal_forgetting_evidence():
+    correct = np.array(
+        [
+            [0, 1, 1],
+            [0, 0, 1],
+            [0, 1, 1],
+            [0, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    margin = np.array(
+        [
+            [-1.0, 1.0, 2.0],
+            [-1.0, -1.0, 2.0],
+            [-1.0, 1.0, 2.0],
+            [-1.0, -1.0, 2.0],
+        ],
+        dtype=np.float16,
+    )
+    stats = compute_event_stats(RunData({}, {}, correct, margin))
+    assert stats.forgetting_count.tolist() == [0, 2, 0]
+    scores = suspicion_score(stats)
+    assert scores[0] > scores[1] > scores[2]

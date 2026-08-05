@@ -17,8 +17,12 @@ def test_storage_round_trip(tmp_path):
     run = read_run(tmp_path)
     np.testing.assert_array_equal(run.correct, correct[None])
     np.testing.assert_equal(run.margin, margin[None])
+    np.testing.assert_array_equal(run.scalars["kind"], ["step", "eval"])
+    np.testing.assert_allclose(run.scalars["loss"], [1.25, np.nan], equal_nan=True)
+    np.testing.assert_allclose(run.scalars["test_acc"], [np.nan, 0.75], equal_nan=True)
     np.testing.assert_array_equal(run.spectrum_steps, [1])
     np.testing.assert_allclose(run.eigs_low, [[-2.0]])
+    np.testing.assert_allclose(run.eigs_high, [[3.0]])
     assert run.meta["steps"] == 1
 
 

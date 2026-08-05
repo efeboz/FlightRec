@@ -1,13 +1,15 @@
 import copy
 
 import numpy as np
+import pytest
 import torch
+from scipy.sparse.linalg import LinearOperator
 from scipy.stats import spearmanr
 from sklearn.datasets import make_blobs
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from flightrec.analysis.influence import InfluenceConfig, influence_on
+from flightrec.analysis.influence import InfluenceConfig, influence_on, self_influence
 
 
 def train_model(dataset, damping, state=None):
@@ -63,3 +65,74 @@ def test_influence_correlates_with_leave_one_out_retraining():
     # Removing a point is the negative of infinitesimal upweighting, up to a positive 1/n scale.
     correlation = spearmanr(-predicted[top], actual).statistic
     assert correlation > 0.8
+
+
+def test_self_influence_matches_materialized_inverse_hessian():
+    torch.manual_seed(7)
+    inputs = torch.tensor([[-1.0, 0.5], [-0.4, 1.2], [0.7, -0.3], [1.1, 0.9]], dtype=torch.float64)
+    targets = torch.tensor([0, 0, 1, 1])
+    dataset = TensorDataset(inputs, targets)
+    model = nn.Linear(2, 2).double()
+    flat = torch.cat([parameter.detach().flatten() for parameter in model.parameters()])
+    damping = 0.25
+
+    def full_loss(vector):
+        weight = vector[:4].reshape(2, 2)
+        bias = vector[4:]
+        return nn.functional.cross_entropy(inputs @ weight.T + bias, targets)
+
+    hessian = torch.autograd.functional.hessian(full_loss, flat).numpy()
+    system = hessian + damping * np.eye(len(flat))
+    expected = []
+    for sample, target in dataset:
+
+        def one_loss(vector, sample=sample, target=target):
+            weight = vector[:4].reshape(2, 2)
+            bias = vector[4:]
+            logits = sample[None] @ weight.T + bias
+            return nn.functional.cross_entropy(logits, target[None])
+
+        gradient = torch.autograd.functional.jacobian(one_loss, flat).numpy()
+        expected.append(float(gradient @ np.linalg.solve(system, gradient)))
+
+    actual = self_influence(
+        model,
+        nn.CrossEntropyLoss(),
+        DataLoader(dataset, batch_size=2, shuffle=False),
+        DataLoader(dataset, batch_size=4, shuffle=False),
+        InfluenceConfig(
+            damping=damping,
+            cg_tol=1e-10,
+            cg_maxiter=100,
+            hessian_batches=1,
+            last_layers_only=False,
+        ),
+        "cpu",
+    )
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-8)
+
+
+def test_self_influence_rejects_nonconverged_cg(monkeypatch):
+    model = nn.Linear(1, 2).double()
+    dataset = TensorDataset(torch.ones(1, 1, dtype=torch.float64), torch.zeros(1, dtype=torch.long))
+
+    def fake_system(*_args, **_kwargs):
+        params = list(model.parameters())
+        size = sum(parameter.numel() for parameter in params)
+        operator = LinearOperator((size, size), matvec=lambda vector: vector, dtype=np.float64)
+        return params, operator
+
+    def fake_cg(*_args, **_kwargs):
+        return np.ones(4), 7
+
+    monkeypatch.setattr("flightrec.analysis.influence._system", fake_system)
+    monkeypatch.setattr("flightrec.analysis.influence.cg", fake_cg)
+    with pytest.raises(RuntimeError, match="did not converge"):
+        self_influence(
+            model,
+            nn.CrossEntropyLoss(),
+            DataLoader(dataset),
+            DataLoader(dataset),
+            InfluenceConfig(last_layers_only=False),
+            "cpu",
+        )
