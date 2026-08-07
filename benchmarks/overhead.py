@@ -3,6 +3,7 @@
 import argparse
 import json
 import platform
+import statistics
 import sys
 import tempfile
 import time
@@ -18,6 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from case_studies.cs1_cifar_label_noise.model import resnet18_cifar  # noqa: E402
+
+MODES = ("off", "cheap", "full")
 
 
 def trial(mode: str, steps: int, seed: int) -> float:
@@ -63,28 +66,59 @@ def trial(mode: str, steps: int, seed: int) -> float:
     return elapsed
 
 
+def measure(steps: int, seed: int, repeats: int) -> dict[str, list[float]]:
+    """Time every mode once per repeat, rotating the order to cancel drift.
+
+    A single pass cannot separate a one-percent recorder cost from machine noise, so each
+    repeat runs all modes and rotates which mode goes first. Position within a repeat is
+    therefore balanced across modes rather than always favouring the same one.
+    """
+    samples: dict[str, list[float]] = {mode: [] for mode in MODES}
+    for repeat in range(repeats):
+        offset = repeat % len(MODES)
+        for mode in MODES[offset:] + MODES[:offset]:
+            samples[mode].append(trial(mode, steps, seed))
+    return samples
+
+
 def main() -> None:
     """Print recorder overhead relative to an uninstrumented loop."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--json-out")
     args = parser.parse_args()
+    if args.repeats < 1:
+        raise SystemExit("--repeats must be at least 1")
     seed_everything(args.seed)
-    values = {mode: trial(mode, args.steps, args.seed) for mode in ("off", "cheap", "full")}
-    print("| mode | seconds | overhead |")
-    print("|---|---:|---:|")
-    for mode, elapsed in values.items():
-        print(f"| {mode} | {elapsed:.3f} | {(elapsed / values['off'] - 1) * 100:.2f}% |")
+    samples = measure(args.steps, args.seed, args.repeats)
+    median = {mode: statistics.median(values) for mode, values in samples.items()}
+    fastest = {mode: min(values) for mode, values in samples.items()}
+    print(f"{args.steps} steps, {args.repeats} repeats, CS1 ResNet at batch 128")
+    print("| mode | median s | fastest s | median overhead | fastest overhead |")
+    print("|---|---:|---:|---:|---:|")
+    for mode in MODES:
+        print(
+            f"| {mode} | {median[mode]:.3f} | {fastest[mode]:.3f} "
+            f"| {(median[mode] / median['off'] - 1) * 100:+.2f}% "
+            f"| {(fastest[mode] / fastest['off'] - 1) * 100:+.2f}% |"
+        )
     if args.json_out:
         result = {
             "steps": args.steps,
             "seed": args.seed,
+            "repeats": args.repeats,
             "model": "CS1 CifarResNet",
             "batch_size": 128,
-            "seconds": values,
-            "overhead_percent": {
-                mode: (elapsed / values["off"] - 1.0) * 100.0 for mode, elapsed in values.items()
+            "seconds_per_repeat": samples,
+            "seconds_median": median,
+            "seconds_fastest": fastest,
+            "overhead_percent_median": {
+                mode: (value / median["off"] - 1.0) * 100.0 for mode, value in median.items()
+            },
+            "overhead_percent_fastest": {
+                mode: (value / fastest["off"] - 1.0) * 100.0 for mode, value in fastest.items()
             },
             "python": sys.version.split()[0],
             "torch": str(torch.__version__),
