@@ -20,8 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-case-studies = ["torchvision"]
-dev = ["pytest", "ruff", "torchvision"]
+case-studies = ["torchvision", "Pillow"]
+dev = ["pytest", "ruff", "torchvision", "Pillow"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -36,4 +36,4 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-
+pythonpath = ["."]
