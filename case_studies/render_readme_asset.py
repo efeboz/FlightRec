@@ -33,6 +33,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def gallery_indices(
+    scores: np.ndarray, noise_mask: np.ndarray, count: int = 5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the highest-ranked overall and non-injected examples."""
+    if scores.shape != noise_mask.shape:
+        raise ValueError("scores and noise_mask must have the same shape")
+    if count < 1:
+        raise ValueError("count must be positive")
+    order = np.argsort(scores, kind="stable")[::-1]
+    overall = order[:count]
+    not_injected = order[~noise_mask[order]][:count]
+    if len(not_injected) < count:
+        raise ValueError(f"need at least {count} non-injected examples")
+    return overall, not_injected
+
+
 def main() -> None:
     """Draw a real accuracy timeline beside real flagged CIFAR thumbnails."""
     args = parse_args()
@@ -76,23 +92,29 @@ def main() -> None:
     cs1_root = Path(args.cs1_run)
     cs1 = read_run(cs1_root)
     scores = suspicion_score(compute_event_stats(cs1))
-    selected = np.argsort(scores)[::-1][:10]
     subset_indices = np.load(cs1_root / "subset_indices.npy")
     noise = np.load(cs1_root / "noise_mask.npy")
+    overall, not_injected = gallery_indices(scores, noise)
     raw = CIFAR10(args.data_dir, train=True, download=False)
-    for position, index in enumerate(selected):
-        column, row = position % 5, position // 5
-        x = 650 + column * 105
-        y = 60 + row * 165
-        thumbnail = raw[int(subset_indices[index])][0].resize((92, 92))
-        canvas.paste(thumbnail, (x, y))
-        color = "#dc2626" if noise[index] else "#2563eb"
-        draw.rectangle((x - 2, y - 2, x + 93, y + 93), outline=color, width=3)
-        draw.text((x, y + 100), f"#{int(index)} score {scores[index]:.2f}", fill=INK, font=font)
-        draw.text(
-            (x, y + 116), "injected noise" if noise[index] else "clean", fill=color, font=font
-        )
-    draw.text((650, 392), "Red: injected label noise   Blue: clean", fill=INK, font=font)
+    draw.text((650, 44), "Top 5 overall", fill=INK, font=font)
+    draw.text((650, 209), "Top 5 among samples not artificially corrupted", fill=INK, font=font)
+    for row, selected in enumerate((overall, not_injected)):
+        for column, index in enumerate(selected):
+            x = 650 + column * 105
+            y = 66 + row * 165
+            thumbnail = raw[int(subset_indices[index])][0].resize((92, 92))
+            canvas.paste(thumbnail, (x, y))
+            color = "#dc2626" if noise[index] else "#2563eb"
+            draw.rectangle((x - 2, y - 2, x + 93, y + 93), outline=color, width=3)
+            draw.text((x, y + 100), f"#{int(index)} score {scores[index]:.2f}", fill=INK, font=font)
+            label = "injected noise" if noise[index] else "not injected"
+            draw.text((x, y + 116), label, fill=color, font=font)
+    draw.text(
+        (650, 397),
+        "Red: injected label noise   Blue: not injected (may still be hard or mislabeled)",
+        fill=INK,
+        font=font,
+    )
 
     output = Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)

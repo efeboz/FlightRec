@@ -9,6 +9,7 @@ from case_studies.mid_digits_noise.train import inject_label_noise as inject_dig
 from case_studies.quick_influence_sanity.run import audit_gradients
 from case_studies.quick_influence_sanity.run import make_data as make_influence_data
 from case_studies.quick_label_noise.run import make_data
+from case_studies.render_readme_asset import gallery_indices
 
 
 def test_label_noise_artifact_is_exact_and_reproducible():
@@ -43,6 +44,16 @@ def test_quick_label_noise_data_is_reproducible_and_exact():
 def test_detector_rank_preserves_ties():
     ranks = rank01(np.array([-2.0, -2.0, 1.0, 4.0, 4.0]))
     np.testing.assert_allclose(ranks, [0.125, 0.125, 0.5, 0.875, 0.875])
+
+
+def test_readme_gallery_includes_truthfully_labeled_non_injected_examples():
+    scores = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4])
+    noise = np.array([True, True, False, True, False, False])
+    overall, not_injected = gallery_indices(scores, noise, count=2)
+    np.testing.assert_array_equal(overall, [0, 1])
+    np.testing.assert_array_equal(not_injected, [2, 4])
+    assert noise[overall].all()
+    assert not noise[not_injected].any()
 
 
 def test_quick_influence_data_is_reproducible_and_standardized():
